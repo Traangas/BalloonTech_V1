@@ -1,0 +1,13 @@
+// Copy to config.h and fill in real values. config.h is gitignored.
+#pragma once
+
+#define HAB_WIFI_SSID "your-wifi-ssid"
+#define HAB_WIFI_PASSWORD "your-wifi-password"
+
+#define HAB_MQTT_HOST "192.168.1.50"  // the machine running docker compose
+#define HAB_MQTT_PORT 1883
+
+#define HAB_RECEIVER_ID "gs1"
+#define HAB_RECEIVER_LAT 52.5200
+#define HAB_RECEIVER_LON 13.4050
+#define HAB_RECEIVER_ALT_M 40.0

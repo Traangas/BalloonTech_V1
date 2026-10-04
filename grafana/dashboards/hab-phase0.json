@@ -1,0 +1,503 @@
+{
+  "id": null,
+  "uid": "hab-phase0",
+  "title": "HAB Phase 0 - Ground Telemetry",
+  "tags": [
+    "hab",
+    "phase0"
+  ],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 9,
+  "refresh": "10s",
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
+  "templating": {
+    "list": [
+      {
+        "name": "bucket",
+        "type": "textbox",
+        "label": "InfluxDB bucket",
+        "query": "telemetry",
+        "current": {
+          "text": "telemetry",
+          "value": "telemetry"
+        }
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Geomap: tracker track + receivers",
+      "type": "geomap",
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 0,
+        "y": 0
+      },
+      "datasource": {
+        "type": "influxdb",
+        "uid": "influxdb-hab"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "influxdb",
+            "uid": "influxdb-hab"
+          },
+          "query": "from(bucket: \"${bucket}\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"telemetry\")\n  |> filter(fn: (r) => r._field == \"lat\" or r._field == \"lon\" or r._field == \"alt_m\")\n  |> filter(fn: (r) => exists r.node_id)\n  |> pivot(rowKey: [\"_time\"], columnKey: [\"_field\"], valueColumn: \"_value\")\n  |> group(columns: [\"node_id\"])\n  |> sort(columns: [\"_time\"])"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "influxdb",
+            "uid": "influxdb-hab"
+          },
+          "query": "from(bucket: \"${bucket}\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"telemetry\")\n  |> filter(fn: (r) => r._field == \"receiver_lat\" or r._field == \"receiver_lon\")\n  |> filter(fn: (r) => exists r.receiver_id)\n  |> group(columns: [\"receiver_id\", \"_field\"])\n  |> last()\n  |> pivot(rowKey: [\"receiver_id\"], columnKey: [\"_field\"], valueColumn: \"_value\")"
+        }
+      ],
+      "options": {
+        "view": {
+          "id": "zero",
+          "lat": 0,
+          "lon": 0,
+          "zoom": 1
+        },
+        "controls": {
+          "showZoom": true,
+          "mouseWheelZoom": true,
+          "showAttribution": true
+        },
+        "basemap": {
+          "type": "osm-standard",
+          "name": "Basemap",
+          "config": {}
+        },
+        "layers": [
+          {
+            "type": "markers",
+            "name": "Tracker track",
+            "location": {
+              "mode": "auto"
+            },
+            "filterData": {
+              "id": "byRefId",
+              "options": "A"
+            },
+            "config": {
+              "style": {
+                "color": {
+                  "fixed": "red"
+                },
+                "size": {
+                  "fixed": 5
+                }
+              }
+            }
+          },
+          {
+            "type": "markers",
+            "name": "Receiver(s)",
+            "location": {
+              "mode": "auto"
+            },
+            "filterData": {
+              "id": "byRefId",
+              "options": "B"
+            },
+            "config": {
+              "style": {
+                "color": {
+                  "fixed": "blue"
+                },
+                "size": {
+                  "fixed": 9
+                }
+              }
+            }
+          }
+        ]
+      },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      }
+    },
+    {
+      "id": 2,
+      "title": "Altitude over time",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 12,
+        "y": 0
+      },
+      "datasource": {
+        "type": "influxdb",
+        "uid": "influxdb-hab"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "influxdb",
+            "uid": "influxdb-hab"
+          },
+          "query": "from(bucket: \"${bucket}\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"telemetry\" and r._field == \"alt_m\")\n  |> group(columns: [\"node_id\"])\n  |> aggregateWindow(every: v.windowPeriod, fn: mean, createEmpty: false)"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "lengthm"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    },
+    {
+      "id": 3,
+      "title": "RSSI and SNR over time",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 9
+      },
+      "datasource": {
+        "type": "influxdb",
+        "uid": "influxdb-hab"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "influxdb",
+            "uid": "influxdb-hab"
+          },
+          "query": "from(bucket: \"${bucket}\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"telemetry\" and (r._field == \"rssi\" or r._field == \"snr\"))\n  |> group(columns: [\"receiver_id\", \"_field\"])\n  |> aggregateWindow(every: v.windowPeriod, fn: mean, createEmpty: false)"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    },
+    {
+      "id": 4,
+      "title": "RSSI vs slant range",
+      "type": "xychart",
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 12,
+        "y": 9
+      },
+      "datasource": {
+        "type": "influxdb",
+        "uid": "influxdb-hab"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "influxdb",
+            "uid": "influxdb-hab"
+          },
+          "query": "from(bucket: \"${bucket}\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"telemetry\")\n  |> filter(fn: (r) => r._field == \"slant_range_km\" or r._field == \"rssi\")\n  |> drop(columns: [\"_start\", \"_stop\", \"node_id\", \"receiver_id\", \"_measurement\"])\n  |> pivot(rowKey: [\"_time\"], columnKey: [\"_field\"], valueColumn: \"_value\")\n  |> sort(columns: [\"_time\"])"
+        }
+      ],
+      "options": {
+        "mapping": "auto",
+        "series": [
+          {
+            "frame": {
+              "matcher": {
+                "id": "byIndex",
+                "options": 0
+              }
+            },
+            "x": {
+              "matcher": {
+                "id": "byName",
+                "options": "slant_range_km"
+              }
+            },
+            "y": {
+              "matcher": {
+                "id": "byName",
+                "options": "rssi"
+              }
+            }
+          }
+        ],
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        },
+        "legend": {
+          "showLegend": true,
+          "displayMode": "list",
+          "placement": "bottom",
+          "calcs": []
+        }
+      },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "description": "Core Phase 0-2 output: RSSI vs ground-to-air slant range. Single ground station (gs1) assumed; add a receiver_id filter/group if testing with more than one receiver.",
+      "pluginVersion": "11.2.0"
+    },
+    {
+      "id": 5,
+      "title": "Packet loss % per receiver",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 17
+      },
+      "datasource": {
+        "type": "influxdb",
+        "uid": "influxdb-hab"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "influxdb",
+            "uid": "influxdb-hab"
+          },
+          "query": "from(bucket: \"${bucket}\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"telemetry\" and r._field == \"packet_loss_pct\")\n  |> group(columns: [\"receiver_id\"])\n  |> aggregateWindow(every: v.windowPeriod, fn: mean, createEmpty: false)"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "max": 100
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    },
+    {
+      "id": 6,
+      "title": "Battery voltage and internal temperature",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 17
+      },
+      "datasource": {
+        "type": "influxdb",
+        "uid": "influxdb-hab"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "influxdb",
+            "uid": "influxdb-hab"
+          },
+          "query": "from(bucket: \"${bucket}\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"telemetry\" and (r._field == \"batt_mv\" or r._field == \"temp_c\"))\n  |> group(columns: [\"node_id\", \"_field\"])\n  |> aggregateWindow(every: v.windowPeriod, fn: mean, createEmpty: false)"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byFrameRefID",
+              "options": "A"
+            },
+            "properties": []
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".*batt_mv.*"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "mvolt"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".*temp_c.*"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "celsius"
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    },
+    {
+      "id": 7,
+      "title": "Status: last packet, fix, sats, flags, reboots",
+      "type": "table",
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 17
+      },
+      "datasource": {
+        "type": "influxdb",
+        "uid": "influxdb-hab"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "influxdb",
+            "uid": "influxdb-hab"
+          },
+          "query": "from(bucket: \"${bucket}\")\n  |> range(start: -1h)\n  |> filter(fn: (r) => r._measurement == \"telemetry\")\n  |> filter(fn: (r) => r._field == \"fix\" or r._field == \"sats\" or r._field == \"airborne_mode\" or r._field == \"rebooted\" or r._field == \"seq\")\n  |> filter(fn: (r) => exists r.node_id)\n  |> group(columns: [\"node_id\", \"_field\"])\n  |> last()\n  |> drop(columns: [\"_start\", \"_stop\"])\n  |> pivot(rowKey: [\"node_id\", \"_time\"], columnKey: [\"_field\"], valueColumn: \"_value\")\n  |> rename(columns: {_time: \"last_seen\"})"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "last_seen"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "dateTimeFromNow"
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true
+      }
+    },
+    {
+      "id": 8,
+      "title": "SNR vs slant range",
+      "type": "xychart",
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 18,
+        "y": 9
+      },
+      "datasource": {
+        "type": "influxdb",
+        "uid": "influxdb-hab"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "influxdb",
+            "uid": "influxdb-hab"
+          },
+          "query": "from(bucket: \"${bucket}\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"telemetry\")\n  |> filter(fn: (r) => r._field == \"slant_range_km\" or r._field == \"snr\")\n  |> drop(columns: [\"_start\", \"_stop\", \"node_id\", \"receiver_id\", \"_measurement\"])\n  |> pivot(rowKey: [\"_time\"], columnKey: [\"_field\"], valueColumn: \"_value\")\n  |> sort(columns: [\"_time\"])"
+        }
+      ],
+      "options": {
+        "mapping": "auto",
+        "series": [
+          {
+            "frame": {
+              "matcher": {
+                "id": "byIndex",
+                "options": 0
+              }
+            },
+            "x": {
+              "matcher": {
+                "id": "byName",
+                "options": "slant_range_km"
+              }
+            },
+            "y": {
+              "matcher": {
+                "id": "byName",
+                "options": "snr"
+              }
+            }
+          }
+        ],
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        },
+        "legend": {
+          "showLegend": true,
+          "displayMode": "list",
+          "placement": "bottom",
+          "calcs": []
+        }
+      },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "description": "Core Phase 0-2 output: SNR vs ground-to-air slant range. Single ground station (gs1) assumed; add a receiver_id filter/group if testing with more than one receiver.",
+      "pluginVersion": "11.2.0"
+    }
+  ]
+}

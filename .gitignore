@@ -1,0 +1,10 @@
+.env
+__pycache__/
+*.pyc
+.venv/
+
+# PlatformIO build artifacts
+.pio/
+
+# Firmware secrets (WiFi/MQTT credentials) - copy config.h.example -> config.h
+firmware/**/include/config.h
