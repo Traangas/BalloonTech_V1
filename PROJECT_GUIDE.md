@@ -16,6 +16,7 @@ works, and everything non-obvious we learned the hard way. Last updated 2026-10-
 - [10. Master list of learnings and gotchas](#10-master-list-of-learnings-and-gotchas)
 - [11. Open work, known gaps, flight-prep notes](#11-open-work-known-gaps-flight-prep-notes)
 - [12. Notes for a future Claude Code session](#12-notes-for-a-future-claude-code-session)
+- [13. Session log: 2026-10-04 (V3 base station, new V4 tracker, antenna path, battery)](#13-session-log-2026-10-04-v3-base-station-new-v4-tracker-antenna-path-battery)
 
 ---
 
@@ -30,14 +31,16 @@ stratospheric flight, 5/6 superpressure float. We are finishing **Phase 0**, hea
 | Docker stack (Mosquitto, InfluxDB 2, Grafana 11.2, Python bridge) | Done, verified end to end with real hardware |
 | Grafana dashboard, 7 panels | Done, shows live data |
 | Packet codec (Python + C++, byte-identical, unit-tested natively) | Done |
-| Base station firmware (LoRa RX -> WiFi/MQTT, OLED, LED) | Done, flashed, verified |
-| Balloon firmware (GNSS + LoRa TX, OLED, LED) | Done, flashed, verified; **battery % and temperature are still placeholders** (see 8.5) |
+| Base station firmware (LoRa RX -> WiFi/MQTT, OLED, LED) | Done, flashed, verified. **Now runs on a Heltec V3** (env `heltec_wifi_lora_32_V3`), RX boosted gain on (13) |
+| Balloon firmware (GNSS + LoRa TX, OLED, LED) | Done, flashed, verified on a second, flatter **V4.3** board; front-end (PA/LNA) now driven, TX power configurable, **real battery voltage** (see 8.7). **Temperature is still a placeholder** (8.5); battery accuracy not yet checked against a multimeter |
 | Real GPS fix with real coordinates in Grafana | Verified outdoors / at a window. No fix indoors (normal) |
 | Power-saving, watchdog, NVS seq/reboot flag, duty-cycle limiter, replay buffer | **Not built** (deferred, see 11) |
 | Flight hardware (battery connector, balloon, enclosure) | In progress, see 11.3 |
 
-The repo is **not yet a git repository** (`git init` it; `.gitignore` already excludes secrets,
-`.venv`, `.pio`, and the receiver's `config.h`).
+The repo is a git repository (remote `Traangas/BalloonTech_V1`); `.gitignore` excludes secrets,
+`.venv`, `.pio`, and the receiver's `config.h`. Today's work is on branch
+`claude/heltec-firmware-flashing-a6e51d`, open as PR #1 (see 13). Note that a git worktree does
+**not** contain the gitignored `config.h`: copy it from the main checkout before building the receiver.
 
 ---
 
@@ -143,7 +146,8 @@ the Python round trip.
 869.525 MHz, BW 125 kHz, CR 4/5, preamble 8, explicit header, CRC on, **private sync word 0x12**
 (0x34 is reserved for LoRaWAN). Spreading factor comes from the build flag `-DHAB_SF=9` in
 **both** `platformio.ini` files. **Tracker and receiver SF must match.** SF9 packet airtime
-measured about 233 ms. Tracker TX power is currently **2 dBm** (bench setting, see 11.2).
+is about 226-233 ms (calculated 226, earlier measured 233). Tracker TX power is `HAB_TX_POWER_DBM`
+in `radio_config.h`, currently **17 dBm into the front-end** (see 5.2 and 11.2).
 
 ### 4.3 MQTT message (receiver -> bridge), topic `hab/rx/<receiver_id>`
 
@@ -183,7 +187,38 @@ Other facts:
   charger/protection circuit and the battery-sense divider.
 - **PlatformIO has no V4 board entry**. Both projects use `board = heltec_wifi_lora_32_V3`
   (pin compatible for what we use).
-- Both boards enumerate as `/dev/cu.usbmodemXXXX` (native USB CDC).
+- A **V4** enumerates as `/dev/cu.usbmodemXXXX` (native USB, VID:PID 303A:1001). A **V3**
+  enumerates as `/dev/cu.usbserial-XXXX` (CP2102 UART bridge, VID:PID 10C4:EA60). That is the
+  quickest way to tell which board is plugged in.
+
+### 5.1 V3 vs V4 differences that matter here
+Same ESP32-S3 and SX1262, and the LoRa, OLED, Vext_Ctrl, LED and battery-ADC pins used by this project
+are identical, so the V4 pin header works unchanged on a V3 (checked by running it, see 13).
+- **USB/serial**: V3 goes through a CP2102 to UART0, so it must NOT set `-DARDUINO_USB_CDC_ON_BOOT=1`
+  (Serial would bind to the unused native USB and the monitor would be silent). V4 must set it.
+  The receiver therefore has two envs (6.2, 6.6).
+- **Flash**: V3 has 8 MB, V4 16 MB. Irrelevant for this firmware.
+- **RF front-end**: V4 has an external PA/LNA (5.2); V3 does not. Receive-only firmware does not care.
+- **Band**: the V3 is sold as 863-870 or 902-928 MHz, or a wideband 863-928 part. The team's V3
+  sticker reads 863~928 MHz, fine for 869.525 MHz. Check the sticker before using a V3, a 915-only part
+  would have poor sensitivity at 869 MHz.
+
+### 5.2 V4 hardware revisions and the LoRa front-end (PA/LNA)
+V4 boards carry an external front-end between the SX1262 and the antenna, and the part and control
+pin differ by revision. Read the revision off the PCB silkscreen.
+
+| Revision | Front-end | GPIO7 (VFEM) | GPIO2 (CSD) | TX path pin |
+|---|---|---|---|---|
+| V4.2 | GC1109 | high (power) | high (enable) | GPIO46 (CPS), high during TX |
+| V4.3 / R8 | KCT8103L | high (power) | high (enable) | GPIO5 (CTX), high during TX |
+
+`board_pins_v4.h` selects the pin from `-DHAB_FEM_KCT8103L` or `-DHAB_FEM_GC1109` (set in
+`tracker/platformio.ini`; currently KCT8103L for the flatter second board). The tracker powers
+and enables the front-end once at startup and raises the TX pin only around `radio.transmit()`.
+**Source caveat**: these roles and levels come from Meshtastic's `LoRaFEMInterface`, because
+Heltec's datasheet PDF has no extractable pin table (and their community post was unreachable). The
+~60 dB RSSI jump (13) supports them, but conducted output power has **not** been measured, and the
+V4.2/GC1109 path has not been run on hardware.
 
 ---
 
@@ -194,7 +229,7 @@ Each board is flashed from its own project directory. Nothing needs to be flashe
 ### 6.1 Identify which port is which board
 
 ```bash
-ls /dev/cu.usbmodem*          # note the list
+ls /dev/cu.usb*               # V4 = usbmodemXXXX, V3 = usbserial-XXXX; note the list
 # unplug one board, run again: the entry that vanished is that board
 ```
 
@@ -211,6 +246,9 @@ cp include/config.h.example include/config.h   # first time only; config.h is gi
 pio run -t upload --upload-port /dev/cu.usbmodemXXXX
 ```
 
+Env choice: `-e heltec_wifi_lora_32_V3` for a V3 base station, the default V4 env otherwise, e.g.
+`pio run -e heltec_wifi_lora_32_V3 -t upload --upload-port /dev/cu.usbserial-0001`.
+
 A second base station: use a different `HAB_RECEIVER_ID` (e.g. "gs2"). The dashboard's
 geomap and scatter panels assume one receiver, see 9.6.
 
@@ -223,7 +261,8 @@ pio run -t upload --upload-port /dev/cu.usbmodemXXXX
 
 `node_id` is hard-coded to `1` in `tracker/src/main.cpp` (`f.node_id = 1`). If you ever fly two
 trackers, give each a different value before flashing (or make it a build flag).
-Make sure `-DHAB_SF=` matches the receiver's.
+Make sure `-DHAB_SF=` matches the receiver's. Check that `-DHAB_FEM_KCT8103L` / `-DHAB_FEM_GC1109` in
+`tracker/platformio.ini` matches the board revision (5.2); the wrong one would drive the wrong pin.
 
 ### 6.4 If upload fails ("No serial data received" / port not found)
 
@@ -256,7 +295,7 @@ EOF
 
 ### 6.6 Required `platformio.ini` flag (do not remove)
 
-`-DARDUINO_USB_CDC_ON_BOOT=1`. The V3 board manifest sets `ARDUINO_USB_MODE=1` but not this one;
+`-DARDUINO_USB_CDC_ON_BOOT=1` **on V4 envs only** (the V3 env deliberately omits it, 5.1). The V3 board manifest sets `ARDUINO_USB_MODE=1` but not this one;
 without it `Serial` binds to a disconnected UART and the board looks dead even though it runs.
 
 ---
@@ -279,6 +318,11 @@ without it `Serial` binds to a disconnected UART and the board looks dead even t
 **Healthy serial output** (from real hardware): `WiFi connected, IP=...`, `MQTT connected`,
 `listening: 869.525 MHz, SF9, BW125kHz, CR4/5`, then a JSON line plus
 `valid=N invalid=0 node=1 seq=...` per packet. Typical bench link: RSSI -54 to -59 dBm, SNR 8 to 10 dB.
+
+**RX boosted gain** is on (`radio.setRxBoostedGainMode(true)` in `setupRadio()`): about +3 dB
+sensitivity for slightly more receive current, fine on USB power. Its benefit has not been measured, because
+the boards have only been close together where the receiver is near saturation; it needs a distance test.
+The `17` in the receiver's `radio.begin()` is an unused required argument: the receiver never transmits.
 
 **Not built yet**: LittleFS buffer-and-replay when WiFi/MQTT drops (packets are lost during an
 outage), WiFi reconnect logic beyond MQTT retry, authenticated MQTT.
@@ -333,23 +377,43 @@ radio accepted the transmit. A real "connected" indicator needs a downlink ACK f
 station (costs airtime and protocol work). That was the user's original wish and is open (see 11.1).
 
 ### 8.5 Placeholders to replace before trusting the numbers
-- `f.batt_mv = 4100` is hard-coded, so the OLED battery percentage and the Grafana battery panel
-  show a fake constant. Real implementation: set GPIO37 HIGH, read ADC on GPIO1, multiply by 4.9,
-  average several samples, set GPIO37 back low.
-- `f.temp_c = 21.0` is hard-coded. Use the ESP32-S3 internal sensor or an external sensor.
-- The battery percentage curve is a linear 3.3 V to 4.2 V approximation.
+- `f.temp_c = 21.0` is still hard-coded. Use the ESP32-S3 internal sensor or an external sensor.
+- (Battery is no longer a placeholder, see 8.7. Its absolute accuracy is still unchecked.)
 
 ### 8.6 Troubleshooting
+- Tracker transmits but the receiver sees a very weak signal (about -74 dBm at 2 dBm TX on a bench):
+  the V4 front-end was not powered or enabled (5.2). With it driven the same setup read about -14 dBm.
 - **No fix**: needs open sky or at least a window, cold start takes about 30 s to a few minutes,
   never fixes indoors. Check `gps_chars` rising and `gps_fail` staying low in the TX log line.
 - `GNSS module NOT responding`: module unpowered. GPIO34 must be driven LOW.
 - `gps_fail` (NMEA checksum failures) climbing fast: UART RX buffer overflowing. The code sets
   `gnssSerial.setRxBufferSize(2048)` before `begin()`. Keep that.
-- `$GPTXT,...ANTENNA OPEN` is printed on some boots. During bring-up it appeared while the antenna
+- `$GPTXT,...ANTENNA OPEN` is printed on some boots (seen again on the second V4 even though it got a
+  fix with 7-8 satellites a few minutes later). During bring-up it appeared while the antenna
   was fine (satellite GSV data proved it) because the real fault was the buffer overflow above.
   Trust satellite counts, not that line alone.
 - Tracker LED flashes but nothing reaches the base station: SF/frequency mismatch, no LoRa antenna
   attached (**never transmit without an antenna**, it can damage the PA).
+
+### 8.7 Battery voltage and percentage
+`readBatteryMv()` in `tracker/src/main.cpp`: set `HAB_BATT_ADC_CTRL_PIN` (GPIO37) HIGH to connect the
+divider, wait 10 ms, discard 2 reads, take 16 `analogReadMilliVolts()` samples on GPIO1 (6 dB attenuation,
+factory-calibrated), sort and average the middle half (rejects spikes), multiply by 4.9
+(`HAB_BATT_ADC_SCALE`), then set GPIO37 low. `setupBattery()` runs 6 warm-up reads at boot.
+`battPercent()` interpolates a typical LiPo resting-voltage table (3.30 V = 0%, 3.84 V = 50%,
+4.20 V = 100%); approximate, not calibrated to the actual pack. `batt_mv` also appears in the serial TX line.
+
+What was observed (real pack, the second V4):
+- Battery alone: about 3830-3840 mV, OLED 48%. Stable to a few mV.
+- USB connected: reading steps up about 135 mV at once and then creeps up (4013 mV at 77% after a few
+  minutes, 4043 mV later), while the board's red charge LED is lit. **While USB charges, the reading and
+  percentage overstate the cell**; read battery state only when running on battery.
+- A cold power-up on battery sent one packet (seq 0) reading 4234 mV, then 3837. Cause not isolated; the
+  warm-up reads were added to target it but the fix has **not** been re-verified on a true cold battery boot
+  (the test after flashing was a USB reset).
+- Not done: comparison against a multimeter. 3.84 V on a part-charged pack is plausible and the OLED
+  percentage matches the curve, but both come from the same ADC number, so absolute accuracy is
+  unconfirmed. If a multimeter disagrees by more than about 30 mV, add a correction factor.
 
 ---
 
@@ -460,6 +524,16 @@ Hardware/firmware
 12. Check every GPIO against the **official datasheet**, not forum posts. Wrong pins fail loudly or
     (like Vext_Ctrl) fail quietly, so always add a hardware sanity step (I2C scan, LED blink, serial).
 
+13a. **V3 vs V4 serial** (13): V3 = CP2102 UART, no USB-CDC flag; V4 = native USB, flag required (5.1).
+13b. **The V4 front-end is off unless you drive it** (5.2). With GPIO7/GPIO2/TX-pin untouched the radio
+     still "works" but at roughly -60 dB: every earlier range impression was handicapped.
+13c. **Check the V4 hardware revision** (silkscreen). V4.2 and V4.3 use different front-ends and a different
+     TX pin. A second "V4" can be a different revision from the first.
+13d. **Charging inflates battery readings** and the charge LED is red while USB charges (8.7).
+13e. TX power set in firmware is the SX1262 drive into the front-end, not antenna power (about +7..+13 dB more).
+13f. A first-packet battery outlier appeared on a cold battery boot (8.7); watch the Grafana battery panel for
+     spikes at reboots.
+
 Process
 13. Hardware-free tests are worth it: `pio test -e native` proves C++/Python packet equivalence.
 14. Build and verify in layers (codec -> bridge with fake receiver -> real stack -> real board -> real GPS).
@@ -470,7 +544,8 @@ Process
 ## 11. Open work, known gaps, flight-prep notes
 
 ### 11.1 Planned firmware work (deferred, in rough priority order)
-1. Real battery ADC + real temperature in the tracker (8.5). Without it the battery panel is fiction.
+1. Real temperature in the tracker (8.5). Battery ADC is done (8.7) but still needs a multimeter check and a
+   cold-boot re-test of the outlier fix.
 2. Tracker power: turn the OLED off after boot (or sleep it), drop CPU clock, light sleep between TX
    instead of `delay(2000)`. Current draw is estimated, not measured.
 3. Hardware watchdog (`esp_task_wdt`), NVS-persisted `seq`/boot counter, set the `rebooted` flag on the
@@ -481,11 +556,16 @@ Process
 6. Receiver: LittleFS ring buffer and replay when WiFi/MQTT is down; WiFi auto-reconnect.
 7. Dashboard: hide `fix=0` positions (9.6); per-receiver variable.
 8. MQTT auth/TLS before the base station leaves a trusted network.
-9. Configurable SF/TX interval/TX power via build flags for the T6 range-test matrix (SF7/9/11/12).
+9. Configurable SF/TX interval via build flags for the T6 range-test matrix (SF7/9/11/12). TX power is done
+   (`HAB_TX_POWER_DBM`). Higher SF needs a longer send interval, see 11.2.
 
 ### 11.2 Radio/regulatory reminders
-- Tracker TX power is a conservative 2 dBm for bench tests. Raise it deliberately for range tests and
-  check the legal power and duty-cycle limits for 869.525 MHz in Germany.
+- Tracker TX power is `HAB_TX_POWER_DBM` = 17 dBm into the front-end, estimated at roughly 26-27 dBm at the
+  antenna (not measured). EU 869.4-869.65 MHz allows 500 mW ERP (27 dBm) at <=10% duty cycle: that is
+  the ceiling, so for range, improve the antenna and placement rather than raising power. Confirm the
+  current legal limits for Germany yourself.
+- **Duty cycle**: SF9, 29-byte packet, 8-symbol preamble is about 226 ms; sent every ~2.3 s is about
+  9.8%, right at the 10% limit. Any higher SF needs a longer interval; the limiter is still a fixed delay (11.1).
 - Never power the radio without an antenna attached.
 - Spec's regulatory inquiry (German authorities, Brandenburg launches) is still outstanding and gates Phase 3.
 - Spec test plan T1 to T9 (power budget, GNSS fix time, 24 h soak, freezer, range tests, antenna
@@ -515,7 +595,72 @@ Process
 - Verify, do not assume: for firmware changes compile, flash, capture serial; for dashboard changes
   look at the real panels in the browser. Type checks do not prove UI or radio behaviour.
 - Protocol changes touch four places: `bridge/packet.py`, `hab_packet.{h,cpp}`, `packet_test`, `bridge/bridge.py`.
-- Treat anything in 11.3 as a calculation to be confirmed, and the placeholders in 8.5 as the first thing to fix
-  before presenting battery data as real.
+- Treat anything in 11.3 as a calculation to be confirmed. Battery is now real but unchecked against a
+  multimeter (8.7); temperature is still a placeholder (8.5), so do not present either as verified.
+- In a git worktree the gitignored `receiver/include/config.h` is missing; copy it from the main checkout.
+- Tooling notes from the 2026-10-04 session: macOS has no `timeout`; `pio device monitor` needs a real TTY, so
+  script serial with pyserial from PlatformIO's own venv
+  (`~/Library/Application Support/pipx/venvs/platformio/bin/python`, system python3 has no pyserial);
+  there is no `pdftotext`/poppler, so PDFs cannot be read without `brew install poppler`.
 - Useful tool habits learned: use `docker compose ps` before assuming the stack is down; Grafana dashboards
   only render fully after a few seconds, and the geomap swallows page-scroll gestures (scroll with the pointer at the right edge).
+
+---
+
+## 13. Session log: 2026-10-04 (V3 base station, new V4 tracker, antenna path, battery)
+
+Branch `claude/heltec-firmware-flashing-a6e51d`, PR #1 into `main`. Commits (oldest first): V3 receiver env;
+V4 front-end control + `HAB_TX_POWER_DBM`; receiver RX boosted gain; real battery read + LiPo curve + boot
+warm-up. The guide update itself is a separate commit.
+
+### 13.1 Goals
+1. Use a second, flatter, lighter V4 (no pin headers) as the new balloon tracker.
+2. Move the base station onto a Heltec V3 (has an antenna and an enclosure).
+3. Optimise for range, and make the tracker battery level real.
+
+### 13.2 Base station on the V3
+- Expectation checked first: all LoRa/OLED/Vext/LED/ADC pins match V4 (5.1), so no pin changes.
+- The V3 showed up as `/dev/cu.usbserial-0001` (CP2102). **Problem found**: the existing env sets
+  `-DARDUINO_USB_CDC_ON_BOOT=1`, which would have left the V3's serial silent. Added a separate
+  `[env:heltec_wifi_lora_32_V3]` to `receiver/platformio.ini` that `extends` the V4 env but omits that flag.
+- Flashed with `pio run -e heltec_wifi_lora_32_V3 -t upload --upload-port /dev/cu.usbserial-0001`
+  (needed `config.h` copied into the worktree).
+- First boot: WiFi OK, but MQTT failed (rc=-2, "Connection reset by peer") simply because Docker Desktop was
+  not running. Started Docker and `docker compose up -d` from the main checkout; the broker IP
+  (192.168.178.102) was unchanged. Then: MQTT connected, radio listening at 869.525 MHz SF9. The OLED
+  was confirmed working by the user.
+- V3 sticker: 863~928 MHz, so it covers 869.525 MHz.
+
+### 13.3 New tracker on the second V4
+- Showed up as `/dev/cu.usbmodem101` (303A:1001). Flashed with `pio run -t upload --upload-port ...`.
+- Immediately transmitted and the V3 received it; bridge showed 0% loss. GPS first showed `fix=0` with
+  `gps_sentences=0`. Indoors alone does not explain zero parsed sentences (a module without sky still emits
+  NMEA), but after the board went outside it got a fix (`fix=3`, 5 then 7-8 satellites) within a few
+  minutes and the sentence counter climbed, so the module and wiring were fine.
+- Boot banner showed `$GPTXT,...ANTENNA OPEN`; see 8.6.
+
+### 13.4 Antenna path and range settings
+- Found the tracker never drove the V4 front-end (5.2). Added `setupFem()` and the per-transmit TX-pin toggle.
+- Revision identification: the new board is V4.3/R8 (KCT8103L, TX pin GPIO5). Pin roles from Meshtastic's
+  driver; Heltec's PDF had no extractable pin table.
+- Added `HAB_TX_POWER_DBM` (default 17, replacing the hard-coded 2 dBm).
+- Measured at the receiver with the boards close together: RSSI about -74 dBm (2 dBm TX, front-end undriven)
+  to about -14 dBm (17 dBm TX, front-end driven), SNR about 10.5-11.5 dB both times. -14 dBm is near receiver
+  saturation, so SNR pinned and the numbers do not give a real range figure yet.
+- Receiver: enabled RX boosted gain (7). Not measurable at close range.
+- Estimated output about 26-27 dBm, EU limit 27 dBm ERP at <=10% duty; current duty about 9.8% (11.2).
+
+### 13.5 Battery
+- Replaced the 4100 mV placeholder with a calibrated ADC read and a LiPo curve (8.7).
+- Test sequence with the real pack, watching `batt_mv` through the radio link while USB was unplugged:
+  USB-only reading about 4141 mV; unplug USB (tracker stops, no battery); connect battery (cold boot, seq 0
+  reads 4234 then settles at about 3837 mV, OLED 48%); reconnect USB (jump to about 3964, then slow climb to
+  about 4043 mV, OLED 77%, red charge LED on).
+- Boot warm-up reads added for the seq 0 outlier; verified only with a USB reset, not a cold battery boot.
+
+### 13.6 Still open after this session
+- Multimeter comparison for battery accuracy; cold battery boot re-test of the outlier fix.
+- Distance test with boards far apart (real range, real effect of boosted gain, conducted-power sanity).
+- V4.2/GC1109 path and the V4.3 pin assignments are not independently verified beyond the RSSI result.
+- Temperature is still a placeholder; duty-cycle limiter, watchdog, power saving not built.
+- GNSS "ANTENNA OPEN" message on the second V4 left uninvestigated.
