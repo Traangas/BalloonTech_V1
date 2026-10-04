@@ -74,9 +74,12 @@
           "showAttribution": true
         },
         "basemap": {
-          "type": "osm-standard",
+          "type": "xyz",
           "name": "Basemap",
-          "config": {}
+          "config": {
+            "url": "http://localhost:8080/{z}/{x}/{y}.png",
+            "attribution": "© OpenStreetMap contributors (cached locally)"
+          }
         },
         "layers": [
           {

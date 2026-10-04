@@ -2,7 +2,7 @@
 
 **Read this first if you are picking this project up again, human or Claude Code session.**
 It records what exists, how to flash each board on its own, how the Grafana dashboard
-works, and everything non-obvious we learned the hard way. Last updated 2026-10-04.
+works, and everything non-obvious we learned the hard way. Last updated 2026-10-04 (added USB/offline field mode, section 7.1).
 
 - [1. Status at a glance](#1-status-at-a-glance)
 - [2. Architecture and repo layout](#2-architecture-and-repo-layout)
@@ -30,14 +30,15 @@ stratospheric flight, 5/6 superpressure float. We are finishing **Phase 0**, hea
 | Docker stack (Mosquitto, InfluxDB 2, Grafana 11.2, Python bridge) | Done, verified end to end with real hardware |
 | Grafana dashboard, 7 panels | Done, shows live data |
 | Packet codec (Python + C++, byte-identical, unit-tested natively) | Done |
-| Base station firmware (LoRa RX -> WiFi/MQTT, OLED, LED) | Done, flashed, verified |
+| Base station firmware (LoRa RX -> WiFi/MQTT **or USB serial**, OLED, LED) | Done, flashed, verified. Flashed in USB mode (`HAB_USE_WIFI 0`) for field use, see 7.1 |
+| Offline field operation (no WiFi/internet): USB forwarder + local map tile cache | Done; forwarder verified with hardware, tile cache needs warming online (7.1) |
 | Balloon firmware (GNSS + LoRa TX, OLED, LED) | Done, flashed, verified; **battery % and temperature are still placeholders** (see 8.5) |
 | Real GPS fix with real coordinates in Grafana | Verified outdoors / at a window. No fix indoors (normal) |
 | Power-saving, watchdog, NVS seq/reboot flag, duty-cycle limiter, replay buffer | **Not built** (deferred, see 11) |
 | Flight hardware (battery connector, balloon, enclosure) | In progress, see 11.3 |
 
-The repo is **not yet a git repository** (`git init` it; `.gitignore` already excludes secrets,
-`.venv`, `.pio`, and the receiver's `config.h`).
+Repo: <https://github.com/Traangas/BalloonTech_V1>. `.gitignore` excludes secrets, `.venv`, `.pio`
+and the receiver's `config.h`.
 
 ---
 
@@ -55,7 +56,9 @@ Balloon ESP32 --LoRa 869.525 MHz--> Base-station ESP32 --WiFi/MQTT--> Mosquitto
 .
 ├── PROJECT_GUIDE.md            <- this file
 ├── README.md                   <- original pipeline readme (pipeline details still accurate)
-├── docker-compose.yml          <- mosquitto, influxdb, grafana, bridge
+├── docker-compose.yml          <- mosquitto, influxdb, grafana, bridge, tilecache
+├── tilecache/nginx.conf        <- OSM tile caching proxy (offline map)
+├── tools/serial_to_mqtt.py     <- USB serial -> MQTT forwarder (field mode, 7.1)
 ├── .env / .env.example         <- compose secrets (.env is gitignored)
 ├── mosquitto/config/mosquitto.conf   <- anonymous, port 1883 (bench only!)
 ├── bridge/
@@ -283,6 +286,38 @@ without it `Serial` binds to a disconnected UART and the board looks dead even t
 **Not built yet**: LittleFS buffer-and-replay when WiFi/MQTT drops (packets are lost during an
 outage), WiFi reconnect logic beyond MQTT retry, authenticated MQTT.
 
+### 7.1 Field / offline mode (USB serial, no WiFi, no internet)
+
+A WiFi receiver can only reach the broker on the network it was configured for, and it blocks at
+boot until it joins. For field use the receiver stays plugged into the laptop and does not use WiFi:
+
+```
+Tracker --LoRa--> Receiver --USB serial--> tools/serial_to_mqtt.py --> Mosquitto (localhost) --> ... --> Grafana (localhost:3000)
+```
+
+- **Firmware**: `#define HAB_USE_WIFI 0` in `firmware/receiver/include/config.h` (default when the
+  flag is absent is `1`, the old WiFi/MQTT behaviour). USB mode skips WiFi, SNTP and MQTT, keeps
+  printing the same JSON line per packet to serial, and omits `rx_timestamp` (no clock on the
+  board). The OLED shows `USB serial mode`.
+- **Laptop**: run the forwarder (auto-detects `/dev/cu.usbserial*` / `usbmodem*`, reconnects on
+  unplug, adds `rx_timestamp` from the laptop clock, publishes to `localhost:1883`):
+  ```bash
+  pip install pyserial paho-mqtt
+  python tools/serial_to_mqtt.py [--port /dev/cu.usbserial-0001]
+  ```
+  Only one program may hold the serial port: close any serial monitor first. The Docker stack
+  must be running; Grafana is `http://localhost:3000`, no network needed.
+- **Map tiles**: the geomap basemap is now `xyz` pointing at `http://localhost:8080/{z}/{x}/{y}.png`,
+  served by the `tilecache` container (nginx caching proxy to OpenStreetMap, 1 year / 2 GB cache in the
+  `tile-cache` volume). Tiles are only cached once they have been viewed **while online**, so before
+  going out, open the dashboard map over the launch and expected landing area and zoom/pan through the
+  zoom levels you will want. Offline, uncached areas show blank tiles; the track and markers still draw.
+- **Before leaving**: `docker compose up -d --build` once while online (pulls images), make sure Docker
+  Desktop starts on its own, and stop the laptop sleeping (a sleeping laptop stops the forwarder).
+- The receiver in this repo's current flashed state is USB mode on `/dev/cu.usbserial-0001` (CP2102
+  bridge, so it appears as `usbserial`, not `usbmodem`). To go back to WiFi/MQTT, set `HAB_USE_WIFI 1`
+  and reflash.
+
 **Troubleshooting**
 - Hangs at "connecting to WiFi": wrong credentials, or a 5 GHz-only network (ESP32 is 2.4 GHz only).
 - Hangs at "waiting for SNTP": no internet on that network.
@@ -478,7 +513,7 @@ Process
 4. Proper rolling-hour **duty-cycle limiter** (currently a fixed 2 s delay); relevant to legal
    limits in the 869 MHz sub-band and to SF11/SF12 range tests.
 5. Optional downlink ACK so the tracker can display "connected to base" and RSSI/SNR (8.4).
-6. Receiver: LittleFS ring buffer and replay when WiFi/MQTT is down; WiFi auto-reconnect.
+6. Receiver (WiFi mode only): LittleFS ring buffer and replay when WiFi/MQTT is down; WiFi auto-reconnect. USB mode (7.1) avoids the problem.
 7. Dashboard: hide `fix=0` positions (9.6); per-receiver variable.
 8. MQTT auth/TLS before the base station leaves a trusted network.
 9. Configurable SF/TX interval/TX power via build flags for the T6 range-test matrix (SF7/9/11/12).

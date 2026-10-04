@@ -18,6 +18,12 @@
 #include "hab_packet.h"
 #include "radio_config.h"
 
+// HAB_USE_WIFI 0 = USB mode: no WiFi/MQTT/NTP, JSON lines go out over serial and
+// tools/serial_to_mqtt.py on the laptop forwards them. Default keeps WiFi/MQTT.
+#ifndef HAB_USE_WIFI
+#define HAB_USE_WIFI 1
+#endif
+
 SPIClass loraSpi(HSPI);
 SX1262 radio = new Module(HAB_LORA_NSS, HAB_LORA_DIO1, HAB_LORA_RST, HAB_LORA_BUSY, loraSpi);
 
@@ -43,6 +49,7 @@ constexpr uint32_t kLinkTimeoutMs = 15000;
 
 void IRAM_ATTR onRadioAction() { packetReceivedFlag = true; }
 
+#if HAB_USE_WIFI
 void connectWiFi() {
   WiFi.mode(WIFI_STA);
   WiFi.begin(HAB_WIFI_SSID, HAB_WIFI_PASSWORD);
@@ -77,6 +84,8 @@ void connectMqtt() {
     }
   }
 }
+
+#endif  // HAB_USE_WIFI
 
 void setupDisplayAndLed() {
   pinMode(HAB_LED_PIN, OUTPUT);
@@ -120,9 +129,14 @@ void updateDisplay() {
   oled.clearDisplay();
   oled.setCursor(0, 0);
   oled.printf("HAB BASE %s\n", HAB_RECEIVER_ID);
+#if HAB_USE_WIFI
   oled.printf("WiFi:%s MQTT:%s\n", WiFi.status() == WL_CONNECTED ? "OK" : "NO",
               mqtt.connected() ? "OK" : "NO");
   oled.printf("IP:%s\n", WiFi.localIP().toString().c_str());
+#else
+  oled.println("USB serial mode");
+  oled.println();
+#endif
   oled.printf("LoRa: %s\n", linked ? "LINKED" : "NO SIGNAL");
   oled.printf("RSSI:%.0f SNR:%.1f\n", lastRssi, lastSnr);
   oled.printf("Last: %s\n", lastStr);
@@ -169,7 +183,7 @@ void publishTelemetry(const uint8_t* raw, size_t len, float rssi, float snr, flo
   lastRssi = rssi;
   lastSnr = snr;
   lastValidPacketMillis = millis();
-  lastValidPacketEpoch = time(nullptr);
+  lastValidPacketEpoch = time(nullptr);  // ~0 without NTP (USB mode); display shows "never"
 
   char hexBuf[hab::kPacketSize * 2 + 1];
   for (size_t i = 0; i < len; ++i) {
@@ -182,7 +196,9 @@ void publishTelemetry(const uint8_t* raw, size_t len, float rssi, float snr, flo
   doc["receiver_lat"] = HAB_RECEIVER_LAT;
   doc["receiver_lon"] = HAB_RECEIVER_LON;
   doc["receiver_alt_m"] = HAB_RECEIVER_ALT_M;
+#if HAB_USE_WIFI
   doc["rx_timestamp"] = (double)time(nullptr);
+#endif  // USB mode: no clock here, the laptop forwarder stamps rx_timestamp
   doc["rssi"] = rssi;
   doc["snr"] = snr;
   doc["freq_error_hz"] = freqErrorHz;
@@ -191,8 +207,10 @@ void publishTelemetry(const uint8_t* raw, size_t len, float rssi, float snr, flo
   char payload[384];
   size_t payloadLen = serializeJson(doc, payload, sizeof(payload));
 
+#if HAB_USE_WIFI
   String topic = String("hab/rx/") + HAB_RECEIVER_ID;
   mqtt.publish(topic.c_str(), (const uint8_t*)payload, payloadLen, false);
+#endif
   Serial.write(payload, payloadLen);
   Serial.println();
   Serial.printf("valid=%lu invalid=%lu node=%u seq=%u fix=%u sats=%u batt_mv=%u\n",
@@ -206,17 +224,21 @@ void setup() {
   Serial.println("\nHAB Phase 0 receiver starting");
 
   setupDisplayAndLed();
+#if HAB_USE_WIFI
   connectWiFi();
   connectMqtt();
+#endif
   setupRadio();
   updateDisplay();
 }
 
 void loop() {
+#if HAB_USE_WIFI
   if (!mqtt.connected()) {
     connectMqtt();
   }
   mqtt.loop();
+#endif
 
   if (packetReceivedFlag) {
     packetReceivedFlag = false;

@@ -1,6 +1,10 @@
 // Copy to config.h and fill in real values. config.h is gitignored.
 #pragma once
 
+// 0 = USB mode: receiver stays plugged into the laptop, works on any network (or none).
+// Run tools/serial_to_mqtt.py on the laptop. 1 = receiver publishes over WiFi/MQTT itself.
+#define HAB_USE_WIFI 0
+
 #define HAB_WIFI_SSID "your-wifi-ssid"
 #define HAB_WIFI_PASSWORD "your-wifi-password"
 
