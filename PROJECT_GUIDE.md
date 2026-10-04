@@ -314,8 +314,12 @@ Tracker --LoRa--> Receiver --USB serial--> tools/serial_to_mqtt.py --> Mosquitto
   zoom levels you will want. Offline, uncached areas show blank tiles; the track and markers still draw.
 - **Before leaving**: `docker compose up -d --build` once while online (pulls images), make sure Docker
   Desktop starts on its own, and stop the laptop sleeping (a sleeping laptop stops the forwarder).
-- The receiver in this repo's current flashed state is USB mode on `/dev/cu.usbserial-0001` (CP2102
-  bridge, so it appears as `usbserial`, not `usbmodem`). To go back to WiFi/MQTT, set `HAB_USE_WIFI 1`
+- **Board variant matters**: the current base station is a Heltec **V3** (CP2102 UART bridge, shows up as
+  `/dev/cu.usbserial-0001`). Build and flash it with `pio run -e heltec_wifi_lora_32_V3 -t upload
+  --upload-port /dev/cu.usbserial-0001`. The default V4 env sets `ARDUINO_USB_CDC_ON_BOOT=1`, which on a V3
+  sends `Serial` to a disconnected native-USB port: the board runs but prints nothing, so the forwarder
+  sees no data (verified). A V4 board uses the V4 env and shows up as `usbmodem`.
+- The receiver in this repo's current flashed state is USB mode on `/dev/cu.usbserial-0001`. To go back to WiFi/MQTT, set `HAB_USE_WIFI 1`
   and reflash.
 
 **Troubleshooting**
