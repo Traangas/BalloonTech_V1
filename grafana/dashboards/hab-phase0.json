@@ -8,7 +8,7 @@
   ],
   "timezone": "browser",
   "schemaVersion": 39,
-  "version": 9,
+  "version": 12,
   "refresh": "10s",
   "time": {
     "from": "now-1h",
@@ -30,6 +30,89 @@
   },
   "panels": [
     {
+      "id": 12,
+      "title": "Data feed",
+      "type": "stat",
+      "gridPos": {
+        "h": 3,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "datasource": {
+        "type": "influxdb",
+        "uid": "influxdb-hab"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "influxdb",
+            "uid": "influxdb-hab"
+          },
+          "query": "from(bucket: \"${bucket}\")\n  |> range(start: -10m)\n  |> filter(fn: (r) => r._measurement == \"telemetry\" and r._field == \"rssi\")\n  |> group()\n  |> last()\n  |> map(fn: (r) => ({_value: float(v: uint(v: now()) - uint(v: r._time)) / 1000000000.0}))\n  |> keep(columns: [\"_value\"])"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "decimals": 0,
+          "noValue": "NO DATA - check forwarder / receiver / tracker",
+          "mappings": [
+            {
+              "type": "range",
+              "options": {
+                "from": 0,
+                "to": 30,
+                "result": {
+                  "text": "LIVE",
+                  "color": "green"
+                }
+              }
+            }
+          ],
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 0
+              },
+              {
+                "color": "red",
+                "value": 30
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "value",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "text": {
+          "valueSize": 28
+        }
+      },
+      "description": "Seconds since the last packet reached InfluxDB. Green 'LIVE' under 30 s; otherwise it shows the age in seconds, and after 10 min with no data it shows NO DATA. If red while the tracker is on: is tools/serial_to_mqtt.py running (USB mode), is the receiver plugged in, is Docker up?",
+      "pluginVersion": "11.2.0"
+    },
+    {
       "id": 1,
       "title": "Geomap: tracker track + receivers",
       "type": "geomap",
@@ -37,7 +120,7 @@
         "h": 9,
         "w": 12,
         "x": 0,
-        "y": 0
+        "y": 3
       },
       "datasource": {
         "type": "influxdb",
@@ -78,7 +161,7 @@
           "name": "Basemap",
           "config": {
             "url": "http://localhost:8080/{z}/{x}/{y}.png",
-            "attribution": "© OpenStreetMap contributors (cached locally)"
+            "attribution": "\u00a9 OpenStreetMap contributors (cached locally)"
           }
         },
         "layers": [
@@ -139,7 +222,7 @@
         "h": 9,
         "w": 12,
         "x": 12,
-        "y": 0
+        "y": 3
       },
       "datasource": {
         "type": "influxdb",
@@ -179,7 +262,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 9
+        "y": 12
       },
       "datasource": {
         "type": "influxdb",
@@ -219,7 +302,7 @@
         "h": 8,
         "w": 6,
         "x": 12,
-        "y": 9
+        "y": 12
       },
       "datasource": {
         "type": "influxdb",
@@ -285,7 +368,7 @@
         "h": 8,
         "w": 8,
         "x": 0,
-        "y": 17
+        "y": 20
       },
       "datasource": {
         "type": "influxdb",
@@ -327,7 +410,7 @@
         "h": 8,
         "w": 8,
         "x": 8,
-        "y": 17
+        "y": 20
       },
       "datasource": {
         "type": "influxdb",
@@ -399,7 +482,7 @@
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 17
+        "y": 20
       },
       "datasource": {
         "type": "influxdb",
@@ -444,7 +527,7 @@
         "h": 8,
         "w": 6,
         "x": 18,
-        "y": 9
+        "y": 12
       },
       "datasource": {
         "type": "influxdb",
@@ -500,6 +583,214 @@
         "overrides": []
       },
       "description": "Core Phase 0-2 output: SNR vs ground-to-air slant range. Single ground station (gs1) assumed; add a receiver_id filter/group if testing with more than one receiver.",
+      "pluginVersion": "11.2.0"
+    },
+    {
+      "id": 9,
+      "title": "Signal strength",
+      "type": "gauge",
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 0,
+        "y": 28
+      },
+      "datasource": {
+        "type": "influxdb",
+        "uid": "influxdb-hab"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "influxdb",
+            "uid": "influxdb-hab"
+          },
+          "query": "from(bucket: \"${bucket}\")\n  |> range(start: -15s)\n  |> filter(fn: (r) => r._measurement == \"telemetry\" and r._field == \"rssi\")\n  |> group(columns: [\"receiver_id\"])\n  |> last()\n  |> map(fn: (r) => ({r with _value: if float(v: r._value) >= -50.0 then 100.0 else if float(v: r._value) <= -130.0 then 0.0 else (float(v: r._value) + 130.0) / 80.0 * 100.0}))\n  |> keep(columns: [\"receiver_id\", \"_value\"])"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "max": 100,
+          "decimals": 0,
+          "noValue": "No link",
+          "color": {
+            "mode": "continuous-RdYlGr"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 100
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showThresholdLabels": false,
+        "showThresholdMarkers": false,
+        "orientation": "auto",
+        "text": {
+          "valueSize": 28,
+          "titleSize": 14
+        }
+      },
+      "description": "Latest RSSI mapped linearly: -130 dBm = 0%, -50 dBm = 100%. Uses only packets from the last 15 s (kLinkTimeoutMs); with no recent packet it shows 'No link'.",
+      "pluginVersion": "11.2.0"
+    },
+    {
+      "id": 10,
+      "title": "Tracker battery",
+      "type": "gauge",
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 6,
+        "y": 28
+      },
+      "datasource": {
+        "type": "influxdb",
+        "uid": "influxdb-hab"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "influxdb",
+            "uid": "influxdb-hab"
+          },
+          "query": "import \"math\"\nfrom(bucket: \"${bucket}\")\n  |> range(start: -15s)\n  |> filter(fn: (r) => r._measurement == \"telemetry\" and r._field == \"batt_mv\")\n  |> group(columns: [\"node_id\"])\n  |> last()\n  |> map(fn: (r) => ({r with volts: string(v: math.round(x: float(v: r._value) / 10.0) / 100.0), _value: if float(v: r._value) >= 4200.0 then 100.0 else if float(v: r._value) <= 3300.0 then 0.0 else (float(v: r._value) - 3300.0) / 900.0 * 100.0}))\n  |> keep(columns: [\"node_id\", \"volts\", \"_value\"])\n  |> group(columns: [\"node_id\", \"volts\"])"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "max": 100,
+          "decimals": 0,
+          "noValue": "No link",
+          "color": {
+            "mode": "continuous-RdYlGr"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 100
+              }
+            ]
+          },
+          "displayName": "${__field.labels.volts} V"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showThresholdLabels": false,
+        "showThresholdMarkers": false,
+        "orientation": "auto",
+        "text": {
+          "valueSize": 28,
+          "titleSize": 14
+        }
+      },
+      "description": "Battery % from batt_mv, linear 3.3 V = 0% to 4.2 V = 100% (same approximation as the tracker OLED). Voltage shown under the value. Older tracker firmware reported a hard-coded 4100 mV placeholder.",
+      "pluginVersion": "11.2.0"
+    },
+    {
+      "id": 11,
+      "title": "Noise",
+      "type": "gauge",
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 12,
+        "y": 28
+      },
+      "datasource": {
+        "type": "influxdb",
+        "uid": "influxdb-hab"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "influxdb",
+            "uid": "influxdb-hab"
+          },
+          "query": "from(bucket: \"${bucket}\")\n  |> range(start: -15s)\n  |> filter(fn: (r) => r._measurement == \"telemetry\" and r._field == \"snr\")\n  |> group(columns: [\"receiver_id\"])\n  |> last()\n  |> map(fn: (r) => ({r with _value: if float(v: r._value) >= 10.0 then 0.0 else if float(v: r._value) <= -15.0 then 100.0 else (10.0 - float(v: r._value)) / 25.0 * 100.0}))\n  |> keep(columns: [\"receiver_id\", \"_value\"])"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "max": 100,
+          "decimals": 0,
+          "noValue": "No link",
+          "color": {
+            "mode": "continuous-GrYlRd"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 100
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showThresholdLabels": false,
+        "showThresholdMarkers": false,
+        "orientation": "auto",
+        "text": {
+          "valueSize": 28,
+          "titleSize": 14
+        }
+      },
+      "description": "Noise derived from SNR: SNR >= +10 dB = 0% (clean), SNR <= -15 dB = 100% (at/below the SF9 decode limit). Uses packets from the last 15 s.",
       "pluginVersion": "11.2.0"
     }
   ]

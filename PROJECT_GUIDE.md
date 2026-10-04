@@ -17,6 +17,7 @@ works, and everything non-obvious we learned the hard way. Last updated 2026-10-
 - [11. Open work, known gaps, flight-prep notes](#11-open-work-known-gaps-flight-prep-notes)
 - [12. Notes for a future Claude Code session](#12-notes-for-a-future-claude-code-session)
 - [13. Session log: 2026-10-04 (V3 base station, new V4 tracker, antenna path, battery)](#13-session-log-2026-10-04-v3-base-station-new-v4-tracker-antenna-path-battery)
+- [14. Session log: 2026-10-04/05 (offline field mode, data-feed banner, walk test)](#14-session-log-2026-10-0405-offline-field-mode-data-feed-banner-walk-test)
 
 ---
 
@@ -504,6 +505,10 @@ or seq goes backwards.
 | 5 | timeseries | Packet loss % per receiver | |
 | 6 | timeseries | Battery voltage and internal temperature | battery unit is **mV** (`mvolt`) |
 | 7 | table | Status: last packet, fix, sats, flags, reboots | last values in the last hour; `last_seen` shows relative time |
+| 9 | gauge | Signal strength | latest RSSI mapped -130 dBm = 0% to -50 dBm = 100%, only packets from the last 15 s, else "No link" |
+| 10 | gauge | Tracker battery | battery % with voltage |
+| 11 | gauge | Noise | noise gauge |
+| 12 | stat | **Data feed** (full-width banner on top) | seconds since the last packet reached InfluxDB: green `LIVE` under 30 s, red above that, `NO DATA - check forwarder / receiver / tracker` after 10 min of silence. Added so a dead USB forwarder (7.1) is obvious |
 
 Quick read of the status table: `fix 0 / sats 0` = no GPS lock; `last_seen: a few seconds ago` =
 the LoRa/WiFi/MQTT chain is alive; `airborne_mode: true` = the CASIC flight mode ACK was received.
@@ -518,6 +523,7 @@ These only appear on a live instance, so keep them in mind when editing queries:
 4. **Hand-written panels need `"pluginVersion": "11.2.0"`**. Without it Grafana runs migrations
    written for older schemas against current options and the panel crashes on load (xychart).
 5. **Geomap showed "API KEY REQUIRED"**: the default basemap needs a key; use `osm-standard`.
+   Since 2026-10-05 the basemap is `xyz` pointing at the local `tilecache` proxy (7.1) so the map works offline.
 6. **xychart in this Grafana build supports one Y series**: RSSI and SNR scatters are two panels.
 7. **Datasource YAML env substitution**: values must be `${VAR}` and the variable must be present in
    the Grafana container's environment (see `docker-compose.yml`).
@@ -594,6 +600,11 @@ Process
 5. Optional downlink ACK so the tracker can display "connected to base" and RSSI/SNR (8.4).
 6. Receiver (WiFi mode only): LittleFS ring buffer and replay when WiFi/MQTT is down; WiFi auto-reconnect. USB mode (7.1) avoids the problem.
 7. Dashboard: hide `fix=0` positions (9.6); per-receiver variable.
+7b. **Receiver position is static**: `HAB_RECEIVER_LAT/LON/ALT_M` are hard-coded in `config.h`, so distance and
+    slant-range panels measure from that point, not from where the laptop actually is. Matters for walking range
+    tests: set the coordinates to the real spot, or feed the laptop's position (e.g. in `serial_to_mqtt.py`).
+7c. USB-mode forwarder (7.1) is started by hand; add a `launchd` job (start at login, restart on exit) so a
+    reboot or closed terminal does not silently stop the feed. The Data feed banner only warns, it does not heal.
 8. MQTT auth/TLS before the base station leaves a trusted network.
 9. Configurable SF/TX interval via build flags for the T6 range-test matrix (SF7/9/11/12). TX power is done
    (`HAB_TX_POWER_DBM`). Higher SF needs a longer send interval, see 11.2.
@@ -703,3 +714,35 @@ warm-up. The guide update itself is a separate commit.
 - V4.2/GC1109 path and the V4.3 pin assignments are not independently verified beyond the RSSI result.
 - Temperature is still a placeholder; duty-cycle limiter, watchdog, power saving not built.
 - GNSS "ANTENNA OPEN" message on the second V4 left uninvestigated.
+
+---
+
+## 14. Session log: 2026-10-04/05 (offline field mode, data-feed banner, walk test)
+
+Problem: everything (radio, Grafana) died away from home WiFi. Cause: the receiver firmware joined one SSID and
+blocked in `connectWiFi()` forever, published to a LAN-only broker IP, and had no reconnect.
+
+### 14.1 What was built
+- **USB mode** for the receiver (`HAB_USE_WIFI 0`): no WiFi/SNTP/MQTT, JSON per packet over serial; laptop-side
+  `tools/serial_to_mqtt.py` forwards to `localhost:1883` and adds `rx_timestamp` (details in 7.1).
+- **Offline map**: `tilecache` container (nginx caching proxy to OpenStreetMap, port 8080, `tile-cache` volume)
+  and the geomap basemap switched to `xyz`. First version failed with 502 because nginx needs
+  `resolver 127.0.0.11` when `proxy_pass` uses a variable; fixed.
+- **Data feed banner** (panel 12, 9.4).
+- Merged `claude/heltec-firmware-flashing-a6e51d` and `claude/connection-loss-outside-wifi-4ea6df` into `main`;
+  receiver and tracker both compile after the merge.
+
+### 14.2 Gotchas found
+1. **Board variant**: flashing the V3 (CP2102, `usbserial`) with the V4 env (`ARDUINO_USB_CDC_ON_BOOT=1`) gives a
+   board that runs but prints nothing, so USB mode shows no data. Use `-e heltec_wifi_lora_32_V3` (7.1).
+2. **Silent failure**: with the forwarder not running, USB mode produces no data and no error. Hence the banner.
+3. A git worktree lacks the gitignored `config.h`; copy it from the main checkout before building the receiver.
+4. Local `main` had drifted from `origin/main`; the main checkout was on `clean-main`. Always `git fetch` first.
+
+### 14.3 Field test (verified by the user)
+- WiFi off, tracker left in a window, laptop and receiver walked through built-up Berlin Mitte.
+- Data feed stayed `LIVE` offline; all panels kept updating; the map showed cached tiles.
+- Link held through many buildings: RSSI fell to about -105 dBm and SNR dipped just below 0 dB, then recovered
+  on the way back (SF9, 125 kHz, tracker TX 17 dBm setting). The dashboard showed a track on the map; GPS fix quality
+  was not separately re-checked this session (tracker showed `sats=0 fix=0` earlier indoors/at the sill).
+- Not yet measured: maximum range, packet loss versus distance with a correct receiver position (11.1 item 7b).
