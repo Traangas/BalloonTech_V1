@@ -14,3 +14,12 @@
 #ifndef HAB_SF
 #define HAB_SF 9  // override with -DHAB_SF=<7|9|11|12> per the T6 test matrix
 #endif
+
+// SX1262 output power in dBm, i.e. the drive INTO the board's external PA,
+// not the power at the antenna. The PA adds roughly +7..+13 dB (less gain at
+// higher drive), so 17 dBm in lands near 26-27 dBm out. EU 869.4-869.65 MHz
+// allows 500 mW ERP (27 dBm) at <=10% duty cycle - don't raise this without
+// checking both. Conducted power has not been measured on this hardware.
+#ifndef HAB_TX_POWER_DBM
+#define HAB_TX_POWER_DBM 17
+#endif

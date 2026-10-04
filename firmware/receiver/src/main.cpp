@@ -160,6 +160,12 @@ void setupRadio() {
   radio.setCRC(true);
   radio.autoLDRO();
 
+  // ~+3 dB RX sensitivity for a little more receive current - fine on USB power.
+  state = radio.setRxBoostedGainMode(true);
+  if (state != RADIOLIB_ERR_NONE) {
+    Serial.printf("setRxBoostedGainMode() failed, code %d - continuing without\n", state);
+  }
+
   radio.setDio1Action(onRadioAction);
   state = radio.startReceive();
   if (state != RADIOLIB_ERR_NONE) {

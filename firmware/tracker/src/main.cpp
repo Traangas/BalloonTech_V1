@@ -175,12 +175,25 @@ void setupGnss() {
   Serial.printf("GNSS dynamic model (flight <1g) %s\n", airborneModeConfirmed ? "CONFIRMED" : "NOT confirmed");
 }
 
+// External PA/LNA front-end: powered and enabled once, TX path switched per
+// packet. Left in the RX/LNA position between packets.
+void setupFem() {
+  pinMode(HAB_FEM_POWER_PIN, OUTPUT);
+  digitalWrite(HAB_FEM_POWER_PIN, HIGH);
+  pinMode(HAB_FEM_CSD_PIN, OUTPUT);
+  digitalWrite(HAB_FEM_CSD_PIN, HIGH);
+  pinMode(HAB_FEM_TX_PIN, OUTPUT);
+  digitalWrite(HAB_FEM_TX_PIN, LOW);
+  delay(5);  // let the FEM supply settle before the first transmit
+}
+
 void setupRadio() {
+  setupFem();
   loraSpi.begin(HAB_LORA_SCK, HAB_LORA_MISO, HAB_LORA_MOSI, HAB_LORA_NSS);
 
   int state = radio.begin(HAB_RADIO_FREQ_MHZ, HAB_RADIO_BANDWIDTH_KHZ, HAB_SF,
                            HAB_RADIO_CODING_RATE, HAB_RADIO_SYNC_WORD,
-                           2 /* txPower dBm - conservative for a close-range bench test */,
+                           HAB_TX_POWER_DBM,
                            HAB_RADIO_PREAMBLE_SYMBOLS);
   if (state != RADIOLIB_ERR_NONE) {
     Serial.printf("radio.begin() failed, code %d - halting\n", state);
@@ -191,8 +204,9 @@ void setupRadio() {
   radio.setCRC(true);
   radio.autoLDRO();
 
-  Serial.printf("radio ready: %.3f MHz, SF%d, BW%.0fkHz, CR4/%d, tx=2dBm\n", HAB_RADIO_FREQ_MHZ,
-                HAB_SF, HAB_RADIO_BANDWIDTH_KHZ, HAB_RADIO_CODING_RATE);
+  Serial.printf("radio ready: %.3f MHz, SF%d, BW%.0fkHz, CR4/%d, tx=%ddBm (into FEM)\n",
+                HAB_RADIO_FREQ_MHZ, HAB_SF, HAB_RADIO_BANDWIDTH_KHZ, HAB_RADIO_CODING_RATE,
+                HAB_TX_POWER_DBM);
 }
 
 void setupDisplayAndLed() {
@@ -221,13 +235,70 @@ void setupDisplayAndLed() {
   oled.display();
 }
 
-// Rough LiPo voltage-to-percent curve (3.3V empty, 4.2V full) - a linear
-// approximation, not calibrated against the real discharge curve yet.
+// Battery voltage in mV. The board's divider is only connected while
+// ADC_CTRL is high (datasheet 2.2.2), and its ~80k source impedance needs
+// time to charge the ADC sample cap, so: enable, settle, discard a couple of
+// reads, then take a trimmed mean (drop the lowest and highest quarter) so a
+// stray spike can't reach the packet. analogReadMilliVolts() applies the
+// chip's factory ADC calibration, which is what makes this a real voltage
+// rather than a raw count.
+uint16_t readBatteryMv() {
+  constexpr int kSamples = 16;
+  uint32_t samples[kSamples];
+  digitalWrite(HAB_BATT_ADC_CTRL_PIN, HIGH);
+  delay(10);
+  analogReadMilliVolts(HAB_BATT_ADC_PIN);
+  analogReadMilliVolts(HAB_BATT_ADC_PIN);
+  for (int i = 0; i < kSamples; i++) {
+    samples[i] = analogReadMilliVolts(HAB_BATT_ADC_PIN);
+    delay(2);
+  }
+  digitalWrite(HAB_BATT_ADC_CTRL_PIN, LOW);
+  for (int i = 1; i < kSamples; i++) {  // insertion sort
+    uint32_t v = samples[i];
+    int j = i - 1;
+    while (j >= 0 && samples[j] > v) { samples[j + 1] = samples[j]; j--; }
+    samples[j + 1] = v;
+  }
+  uint32_t sum = 0;
+  for (int i = kSamples / 4; i < kSamples - kSamples / 4; i++) sum += samples[i];
+  return static_cast<uint16_t>(sum / (kSamples / 2) * HAB_BATT_ADC_SCALE + 0.5f);
+}
+
+void setupBattery() {
+  pinMode(HAB_BATT_ADC_CTRL_PIN, OUTPUT);
+  digitalWrite(HAB_BATT_ADC_CTRL_PIN, LOW);
+  // Divided battery voltage is at most ~0.86 V; 6 dB attenuation (~1.75 V
+  // full scale) keeps it in a better-resolved range than the 11 dB default.
+  analogSetPinAttenuation(HAB_BATT_ADC_PIN, ADC_6db);
+  // A cold power-up on battery read ~400 mV high on the first packet only
+  // (seen once, cause not isolated). Run warm-up reads now, spread over
+  // ~300 ms, so the ADC and rail have settled by the first real sample.
+  for (int i = 0; i < 6; i++) {
+    readBatteryMv();
+    delay(50);
+  }
+}
+
+// LiPo voltage-to-percent from a typical single-cell resting-voltage table,
+// linearly interpolated. Approximate: not calibrated to this cell, and the
+// reading sags under load and reads high while USB is charging the cell.
 uint8_t battPercent(uint16_t mv) {
-  float pct = (mv - 3300) / (4200.0f - 3300.0f) * 100.0f;
-  if (pct < 0) pct = 0;
-  if (pct > 100) pct = 100;
-  return static_cast<uint8_t>(pct);
+  static const struct { uint16_t mv; uint8_t pct; } kCurve[] = {
+      {3300, 0},  {3610, 5},  {3690, 10}, {3730, 20}, {3770, 30}, {3800, 40},
+      {3840, 50}, {3870, 60}, {3910, 65}, {3950, 70}, {3980, 75}, {4020, 80},
+      {4080, 85}, {4110, 90}, {4150, 95}, {4200, 100},
+  };
+  constexpr size_t kN = sizeof(kCurve) / sizeof(kCurve[0]);
+  if (mv <= kCurve[0].mv) return 0;
+  if (mv >= kCurve[kN - 1].mv) return 100;
+  for (size_t i = 1; i < kN; i++) {
+    if (mv <= kCurve[i].mv) {
+      float t = static_cast<float>(mv - kCurve[i - 1].mv) / (kCurve[i].mv - kCurve[i - 1].mv);
+      return static_cast<uint8_t>(kCurve[i - 1].pct + t * (kCurve[i].pct - kCurve[i - 1].pct) + 0.5f);
+    }
+  }
+  return 100;
 }
 
 // "LoRa TX: OK/FAIL" reflects the radio hardware accepting the last
@@ -289,14 +360,16 @@ void loop() {
   f.alt_m = gps.altitude.isValid() ? static_cast<float>(gps.altitude.meters()) : 0.0f;
   f.sats = gps.satellites.isValid() ? static_cast<uint8_t>(gps.satellites.value()) : 0;
 
-  f.batt_mv = 4100;  // placeholder - battery ADC comes in a later increment
+  f.batt_mv = readBatteryMv();
   f.temp_c = 21.0f;
   f.flags = airborneModeConfirmed ? hab::kFlagAirborneMode : 0;
 
   uint8_t buf[hab::kPacketSize];
   hab::encodePacket(f, buf, sizeof(buf));
 
+  digitalWrite(HAB_FEM_TX_PIN, HIGH);
   int state = radio.transmit(buf, hab::kPacketSize);
+  digitalWrite(HAB_FEM_TX_PIN, LOW);
   lastTxOk = (state == RADIOLIB_ERR_NONE);
 
   digitalWrite(HAB_LED_PIN, HIGH);
@@ -305,8 +378,8 @@ void loop() {
 
   updateDisplay(f);
 
-  Serial.printf("TX seq=%u %s fix=%u sats=%u lat=%.5f lon=%.5f alt=%.1f gps_chars=%u gps_sentences=%u gps_fail=%u\n",
-                seq, lastTxOk ? "ok" : "FAILED", f.fix, f.sats, f.lat, f.lon, f.alt_m,
+  Serial.printf("TX seq=%u %s fix=%u sats=%u lat=%.5f lon=%.5f alt=%.1f batt_mv=%u gps_chars=%u gps_sentences=%u gps_fail=%u\n",
+                seq, lastTxOk ? "ok" : "FAILED", f.fix, f.sats, f.lat, f.lon, f.alt_m, f.batt_mv,
                 gps.charsProcessed(), gps.sentencesWithFix(), gps.failedChecksum());
 
   seq++;
@@ -318,6 +391,7 @@ void setup() {
   delay(1000);
   Serial.println("\nHAB Phase 0 tracker - GPS + TX bring-up");
 
+  setupBattery();
   setupDisplayAndLed();
   setupGnss();
   setupRadio();
