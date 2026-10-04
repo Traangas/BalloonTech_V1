@@ -175,12 +175,25 @@ void setupGnss() {
   Serial.printf("GNSS dynamic model (flight <1g) %s\n", airborneModeConfirmed ? "CONFIRMED" : "NOT confirmed");
 }
 
+// External PA/LNA front-end: powered and enabled once, TX path switched per
+// packet. Left in the RX/LNA position between packets.
+void setupFem() {
+  pinMode(HAB_FEM_POWER_PIN, OUTPUT);
+  digitalWrite(HAB_FEM_POWER_PIN, HIGH);
+  pinMode(HAB_FEM_CSD_PIN, OUTPUT);
+  digitalWrite(HAB_FEM_CSD_PIN, HIGH);
+  pinMode(HAB_FEM_TX_PIN, OUTPUT);
+  digitalWrite(HAB_FEM_TX_PIN, LOW);
+  delay(5);  // let the FEM supply settle before the first transmit
+}
+
 void setupRadio() {
+  setupFem();
   loraSpi.begin(HAB_LORA_SCK, HAB_LORA_MISO, HAB_LORA_MOSI, HAB_LORA_NSS);
 
   int state = radio.begin(HAB_RADIO_FREQ_MHZ, HAB_RADIO_BANDWIDTH_KHZ, HAB_SF,
                            HAB_RADIO_CODING_RATE, HAB_RADIO_SYNC_WORD,
-                           2 /* txPower dBm - conservative for a close-range bench test */,
+                           HAB_TX_POWER_DBM,
                            HAB_RADIO_PREAMBLE_SYMBOLS);
   if (state != RADIOLIB_ERR_NONE) {
     Serial.printf("radio.begin() failed, code %d - halting\n", state);
@@ -191,8 +204,9 @@ void setupRadio() {
   radio.setCRC(true);
   radio.autoLDRO();
 
-  Serial.printf("radio ready: %.3f MHz, SF%d, BW%.0fkHz, CR4/%d, tx=2dBm\n", HAB_RADIO_FREQ_MHZ,
-                HAB_SF, HAB_RADIO_BANDWIDTH_KHZ, HAB_RADIO_CODING_RATE);
+  Serial.printf("radio ready: %.3f MHz, SF%d, BW%.0fkHz, CR4/%d, tx=%ddBm (into FEM)\n",
+                HAB_RADIO_FREQ_MHZ, HAB_SF, HAB_RADIO_BANDWIDTH_KHZ, HAB_RADIO_CODING_RATE,
+                HAB_TX_POWER_DBM);
 }
 
 void setupDisplayAndLed() {
@@ -296,7 +310,9 @@ void loop() {
   uint8_t buf[hab::kPacketSize];
   hab::encodePacket(f, buf, sizeof(buf));
 
+  digitalWrite(HAB_FEM_TX_PIN, HIGH);
   int state = radio.transmit(buf, hab::kPacketSize);
+  digitalWrite(HAB_FEM_TX_PIN, LOW);
   lastTxOk = (state == RADIOLIB_ERR_NONE);
 
   digitalWrite(HAB_LED_PIN, HIGH);

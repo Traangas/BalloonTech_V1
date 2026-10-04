@@ -53,3 +53,20 @@
 #define HAB_GNSS_RST_PIN 42     // GNSS_RST
 #define HAB_GNSS_PPS_PIN 41     // GNSS_PPS
 #define HAB_GNSS_WAKEUP_PIN 40  // GNSS_Wakeup
+
+// LoRa front-end module (external PA + LNA between the SX1262 and the
+// antenna). The FEM differs by board revision - select with exactly one of
+// -DHAB_FEM_GC1109 (V4.2) or -DHAB_FEM_KCT8103L (V4.3 / R8); the tracker's
+// platformio.ini sets it. Pin roles and levels follow Meshtastic's
+// LoRaFEMInterface for these boards (not Heltec's datasheet, which has no
+// extractable pin table) - verify by RSSI at the receiver, see tracker docs.
+//
+// GPIO7 powers the FEM (VFEM) and GPIO2 is its chip-enable (CSD); both stay
+// high. The TX/RX path select must be high only while transmitting.
+#define HAB_FEM_POWER_PIN 7
+#define HAB_FEM_CSD_PIN 2
+#if defined(HAB_FEM_GC1109)
+#define HAB_FEM_TX_PIN 46  // CPS: PA mode select, high = TX
+#elif defined(HAB_FEM_KCT8103L)
+#define HAB_FEM_TX_PIN 5  // CTX: high = TX path, low = RX/LNA path
+#endif
