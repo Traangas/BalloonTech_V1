@@ -18,6 +18,7 @@ works, and everything non-obvious we learned the hard way. Last updated 2026-10-
 - [12. Notes for a future Claude Code session](#12-notes-for-a-future-claude-code-session)
 - [13. Session log: 2026-10-04 (V3 base station, new V4 tracker, antenna path, battery)](#13-session-log-2026-10-04-v3-base-station-new-v4-tracker-antenna-path-battery)
 - [14. Session log: 2026-10-04/05 (offline field mode, data-feed banner, walk test)](#14-session-log-2026-10-0405-offline-field-mode-data-feed-banner-walk-test)
+- [15. First balloon flight: 2026-10-24 (data, analysis, 3D replay)](#15-first-balloon-flight-2026-10-24-data-analysis-3d-replay)
 
 ---
 
@@ -35,7 +36,8 @@ stratospheric flight, 5/6 superpressure float. We are finishing **Phase 0**, hea
 | Base station firmware (LoRa RX -> WiFi/MQTT **or USB serial**, OLED, LED) | Done, flashed, verified. **Runs on a Heltec V3** (env `heltec_wifi_lora_32_V3`), RX boosted gain on (13). Flashed in USB mode (`HAB_USE_WIFI 0`) for field use, see 7.1 |
 | Offline field operation (no WiFi/internet): USB forwarder + local map tile cache | Done; forwarder verified with hardware, tile cache needs warming online (7.1) |
 | Balloon firmware (GNSS + LoRa TX, OLED, LED) | Done, flashed, verified on a second, flatter **V4.3** board; front-end (PA/LNA) now driven, TX power configurable, **real battery voltage** (see 8.7). **Temperature is still a placeholder** (8.5); battery accuracy not yet checked against a multimeter |
-| Real GPS fix with real coordinates in Grafana | Verified outdoors / at a window. No fix indoors (normal) |
+| Real GPS fix with real coordinates in Grafana | Verified outdoors / at a window. No fix indoors (normal). **Held a 3D fix for the whole first balloon flight (5-27 sats), see 15** |
+| First balloon flight (2026-10-24, to 9.9 km, 133 km range) | Flown; data exported and analysed in `data/flight-2026-10-24/`, see 15 |
 | Power-saving, watchdog, NVS seq/reboot flag, duty-cycle limiter, replay buffer | **Not built** (deferred, see 11) |
 | Flight hardware (battery connector, balloon, enclosure) | In progress, see 11.3 |
 
@@ -746,3 +748,69 @@ blocked in `connectWiFi()` forever, published to a LAN-only broker IP, and had n
   on the way back (SF9, 125 kHz, tracker TX 17 dBm setting). The dashboard showed a track on the map; GPS fix quality
   was not separately re-checked this session (tracker showed `sats=0 fix=0` earlier indoors/at the sill).
 - Not yet measured: maximum range, packet loss versus distance with a correct receiver position (11.1 item 7b).
+
+---
+
+## 15. First balloon flight: 2026-10-24 (data, analysis, 3D replay)
+
+Everything for this flight lives in `data/flight-2026-10-24/` (read its `README.md` first). Times are Berlin (CEST,
+UTC+2). The receiver ran in USB mode (7.1) with the forwarder on the laptop, so the chain worked with no WiFi.
+
+### 15.1 Dataset and how it was made
+- Exported from InfluxDB (bucket `telemetry`, node 1, receiver gs1) for 16:00-18:30 (14:00-16:30 UTC): 1237 packets,
+  16:00:02 to 18:23:14. **No packets arrived after 18:23:14**, so the data simply ends at the last received packet
+  (9,886 m); it is not known whether that was burst, range loss or landing.
+- Files: `flight_clean.csv` (analysis-ready), `flight_raw.csv` (pivoted dump of every InfluxDB field),
+  `flight_3d_replay.html` (3D animation), `README.md` (columns and caveats).
+- Export gotcha: the bridge also writes error points that carry only a `receiver_id` tag. A Flux `pivot` keyed on
+  `node_id` fails on them, so filter with `exists r.node_id` first.
+
+### 15.2 Corrections that were needed (do not skip when analysing)
+1. **Receiver position was wrong.** `HAB_RECEIVER_LAT/LON/ALT_M` in `config.h` were still the Berlin placeholder
+   (52.52, 13.405), but the flight launched near Wennigsen (52.2727 N, 9.5850 E, about 86 m). Every `distance_km`,
+   `slant_range_km`, `elevation_deg` stored in InfluxDB for this flight is therefore wrong (about 260 km at launch).
+   `flight_clean.csv` recomputes them with `bridge/geo.py` using the first GPS fix as the receiver position.
+   Fix for next time: set the real receiver coordinates in `config.h` before flying (see 11.1 item 7b).
+2. **`temp_c` is a placeholder** (constant 21 C), so there is no measured temperature. `air_temp_model_c` in the CSV
+   is the Open-Meteo weather model at the packet's position, time and altitude (surface plus 1000-250 hPa levels at six
+   points along the track, interpolated). `air_temp_isa_from_16h_c` is the simple 6.5 C/km estimate from the 10.2 C
+   surface reading at 16:00. Model and estimate agree within about 2.5 C below 6 km; the estimate is about 5 C too
+   cold at the top.
+
+### 15.3 What the flight showed
+- **Climb**: 86 m to 9,886 m, steady (about 600-1,000 m per 10 min). Full 3D GPS fix on every received packet,
+  5 to 27 satellites. `airborne_mode` (CASIC flight mode) true throughout; no reboots flagged.
+- **Track**: launch 52.273 N, 9.585 E; last fix 51.530 N, 11.109 E. 133 km straight-line, **175.9 km along the path**
+  (ratio 1.32).
+- **Wind**: below about 7 km the balloon moved toward ENE (55-80 deg) at 20-57 km/h. Above 7 km it turned about 90
+  degrees toward SSE (145-157 deg) and sped up to 160-210 km/h (max 210 km/h at 9.4 km, 18:16:17): a jet-stream layer.
+- **Link**: last packet decoded at 133.6 km slant range (RSSI -121 dBm, SNR -16.25 dB, SF9/125 kHz). RSSI ranged
+  -9 to -126 dBm. Reception was patchy: 1237 packets received out of about 2968 sent (seq 760 to 3727), about 42%,
+  with 15 gaps over a minute (longest about 8.6 min, mostly 16:50-18:06) where RSSI sat near -115 to -126 dBm.
+- **Battery**: 3949 mV at launch, about 3900 until 17:10, then fell to **3406 mV** at the last packet (3.4 V is near
+  LiPo empty). Modelled air temperature over the same period fell from about 0 C to -48 C. Cold is a plausible cause of
+  the sag but it was not isolated; discharge from time alone is also possible. Needs a bench cold test (see 11.3).
+- **Temperature (model)**: 10.2 C at 82 m, about -48 C at 9.9 km (model lapse about 6.0 C/km).
+
+### 15.4 3D replay (`flight_3d_replay.html`)
+Self-contained (about 2.8 MB, no internet or libraries). Open it in a normal browser (double-click). The Claude desktop
+app file preview shows it as a dead static snapshot because scripts do not run there.
+- 3D track over an OpenStreetMap underlay (56 zoom-10 tiles embedded; toggle and brightness in the options panel),
+  coloured by modelled air temperature (default), altitude, ground speed, RSSI or battery.
+- Playback with play/pause/restart, a timeline to scrub, speed from 1x to 1200x (-/+ buttons, dropdown or Up/Down keys),
+  top/side/3D view presets, auto-rotate and follow mode. Balloon label shows altitude and ground speed; side panel
+  shows time, altitude, speed, heading, path travelled, distance from launch, slant range, RSSI/SNR, air temp, battery,
+  satellites. Dashed segments and shaded timeline bands mark periods with no packets (position interpolated).
+- Height is exaggerated 6x by default (visual only; slider). The page is generated from `flight_clean.csv` plus
+  tiles fetched through the project's `tilecache`; there is no generator script in the repo yet, so regenerating it
+  means rebuilding it by hand or asking a Claude session to redo it.
+
+### 15.5 Follow-ups from the flight
+1. Set the real receiver position in `config.h` (or send the laptop's position) so Grafana's distance/slant panels are right.
+2. Real air temperature sensing on the tracker (an external sensor; the ESP32's internal sensor reads chip, not air, temperature).
+3. Investigate the battery sag at altitude (cold test), and consider a larger or lithium-primary cell for longer flights.
+4. Keep the forwarder from dying silently: launchd job (11.1 item 7c); the Data feed banner only warns.
+5. Reception was about 42%: consider a better ground antenna and elevated receiver position, and a receive-side log of
+   every packet (the receiver also prints each packet to serial) so a laptop sleep does not lose data.
+6. The data ended at 18:23:14 at 9,886 m. Whether this was range, burst or landing is unknown; a tracker-side log or a
+   second receiver closer to the landing area would settle it.
